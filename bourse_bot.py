@@ -10,21 +10,22 @@ import requests
 import urllib3
 from datetime import datetime
 
+# غیرفعال کردن هشدارهای عدم بررسی گواهی SSL برای سرورهای داخلی
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# دریافت توکن و چت‌آیدی بله از متغیرهای محیطی
+# دریافت توکن و چت‌آیدی بله از متغیرهای محیطی گیت‌هاب
 BALE_TOKEN = os.getenv("BALE_TOKEN")
 BALE_CHAT_ID = os.getenv("BALE_CHAT_ID")
 STATE_FILE = "bourse_state.json"
 
-# نمادهای مورد نظر برای پایش روزانه (قابل ویرایش)
+# لیست نمادهای مورد نظر برای پایش روزانه (قابل ویرایش)
 WATCHLIST = [
     "وبملت", "شپدیس", "فسپا", "کپرور", "تکیمیا", 
     "کتوکا", "حگردش", "فسرب", "خمحرکه", "خودرو", "خساپا"
 ]
 
 def send_bale_message(text: str) -> bool:
-    """ارسال پیام به بله"""
+    """ارسال پیام به پیام‌رسان بله"""
     if not BALE_TOKEN or not BALE_CHAT_ID:
         print("⚠️ توکن یا چت‌آیدی بله تنظیم نشده است.")
         print(text)
@@ -44,6 +45,7 @@ def send_bale_message(text: str) -> bool:
         return False
 
 def load_state():
+    """خواندن آخرین وضعیت سیگنال‌ها از فایل ذخیره"""
     if os.path.exists(STATE_FILE):
         try:
             with open(STATE_FILE, 'r', encoding='utf-8') as f:
@@ -53,6 +55,7 @@ def load_state():
     return {}
 
 def save_state(state):
+    """ذخیره وضعیت جدید در فایل"""
     try:
         with open(STATE_FILE, 'w', encoding='utf-8') as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
@@ -60,63 +63,86 @@ def save_state(state):
         pass
 
 def get_tsetmc_market_watch():
-    """دریافت اطلاعات دیده بان بازار از TSETMC"""
-    url = "https://old.tsetmc.com/tsev2/data/MarketWatchPlus.aspx"
+    """دریافت اطلاعات دیده‌بان بازار از سرورهای TSETMC (با لینک‌های پشتیبان)"""
+    urls = [
+        "https://cdn.tsetmc.com/api/ClosingPrice/GetMarketWatch?market=0&organ=0",
+        "https://old.tsetmc.com/tsev2/data/MarketWatchPlus.aspx"
+    ]
+    
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*"
     }
     
-    try:
-        res = requests.get(url, headers=headers, timeout=20, verify=False)
-        if res.status_code == 200:
-            return res.text
-    except Exception as e:
-        print(f"خطا در دریافت اطلاعات TSETMC: {e}")
+    for url in urls:
+        try:
+            res = requests.get(url, headers=headers, timeout=15, verify=False)
+            if res.status_code == 200 and len(res.text) > 100:
+                return res.text
+        except Exception as e:
+            print(f"تلاش ناموفق برای دریافت از {url}: {e}")
+            continue
+
     return None
 
 def analyze_bourse():
-    """تحلیل نمادها و بررسی شرایط ورود/حجم مشکوک"""
+    """تحلیل نمادها و بررسی شرایط حجم و قیمت"""
     raw_data = get_tsetmc_market_watch()
     now_str = datetime.now().strftime("%H:%M")
     
     if not raw_data:
-        return None, f"⚠️ **خطا در پایش بورس ({now_str})**\n\nامکان دریافت اطلاعات از سرور TSETMC برقرار نشد."
+        return None, f"⚠️ **خطا در پایش بورس ({now_str})**\n\nامکان دریافت اطلاعات از سرور TSETMC (خارج از ساعت بازار یا اختلال شبکه) برقرار نشد."
 
-    # پردازش اولیه نمادهای دارای معامله
-    sections = raw_data.split("@")
-    if len(sections) < 3:
-        return None, f"⚠️ **اطلاعات بازار ناصلب است ({now_str})**"
-
-    price_data = sections[2].split(";")
-    
     signals = []
     scanned_count = 0
 
-    for item in price_data:
-        parts = item.split(",")
-        if len(parts) >= 11:
-            symbol_name = parts[2]  # نماد
-            close_price = parts[6]   # قیمت پایانی
-            last_price = parts[7]    # آخرین قیمت
-            vol = parts[9]           # حجم معاملات
-
-            # چک کردن اینکه آیا نماد در دیده‌بان ما هست یا خیر
-            if symbol_name in WATCHLIST:
-                scanned_count += 1
-                try:
-                    vol_num = float(vol)
-                    price_num = float(last_price)
-                    
-                    # فیلتر نمونه: اگر حجم معامله قابل توجه باشد
-                    if vol_num > 1000000:  
+    # اگر پاسخ به‌صورت JSON از API جدید باشد
+    if raw_data.startswith("{") or raw_data.startswith("["):
+        try:
+            data = json.loads(raw_data)
+            market_list = data.get("marketWatch", []) if isinstance(data, dict) else data
+            for item in market_list:
+                lval = item.get("lVal18RFC", "")  # نام نماد
+                if lval in WATCHLIST:
+                    scanned_count += 1
+                    price = item.get("pClosing", 0)
+                    vol = item.get("tVol", 0)
+                    if vol > 1000000:  # فیلتر نمونه: حجم بیش از ۱ میلیون
                         signals.append({
-                            "sym": symbol_name,
-                            "price": price_num,
-                            "vol": vol_num,
+                            "sym": lval,
+                            "price": price,
+                            "vol": vol,
                             "time": now_str
                         })
-                except ValueError:
-                    continue
+            return signals, scanned_count
+        except Exception as e:
+            print(f"خطا در پردازش JSON: {e}")
+
+    # اگر پاسخ به‌صورت متنی (قدیمی) باشد
+    sections = raw_data.split("@")
+    if len(sections) >= 3:
+        price_data = sections[2].split(";")
+        for item in price_data:
+            parts = item.split(",")
+            if len(parts) >= 11:
+                symbol_name = parts[2]
+                last_price = parts[7]
+                vol = parts[9]
+
+                if symbol_name in WATCHLIST:
+                    scanned_count += 1
+                    try:
+                        vol_num = float(vol)
+                        price_num = float(last_price)
+                        if vol_num > 1000000:
+                            signals.append({
+                                "sym": symbol_name,
+                                "price": price_num,
+                                "vol": vol_num,
+                                "time": now_str
+                            })
+                    except ValueError:
+                        continue
 
     return signals, scanned_count
 
@@ -127,17 +153,16 @@ def main():
 
     signals, result_info = analyze_bourse()
 
-    # حالت اول: خطا در اتصال
+    # ۱. حالت خطا در اتصال به TSETMC
     if signals is None and isinstance(result_info, str):
         send_bale_message(result_info)
         return
 
-    # حالت دوم: پیدا شدن سیگنال‌های جدید
+    # ۲. حالت ثبت سیگنال‌های جدید
     new_signals = []
     if signals:
         for sig in signals:
             last_time = state.get(sig["sym"], {}).get("last_sent")
-            # جلوگیری از ارسال پیام تکراری در یک روز
             if last_time != sig["time"]:
                 new_signals.append(sig)
                 state[sig["sym"]] = {"last_sent": sig["time"]}
@@ -151,16 +176,16 @@ def main():
                 f"💰 آخرین قیمت: **{s['price']:,.0f} ریال**\n"
                 f"📊 حجم معاملات: **{s['vol']:,.0f}**\n"
                 f"⏰ زمان ثبت: {s['time']}\n\n"
-                f"🔗 بررسی نماد در TSETMC"
+                f"🟢 وضعیت: حجم مشکوک / ورود پول شناسایی شد."
             )
             send_bale_message(msg)
             time.sleep(0.5)
     else:
-        # حالت سوم: اجرای موفقیت‌آمیز ولی عدم وجود سیگنال جدید (جهت اطمینان از کارکرد ربات)
+        # ۳. حالت اجرا بدون سیگنال جدید (گزارش سلامت ربات)
         msg = (
             f"📊 **گزارش دیده‌بان بورس ({now_time})**\n\n"
             f"• تعداد نمادهای بررسی شده: **{result_info} نماد**\n"
-            f"• وضعیت: *هیچ سهمی فیلتر حجم مشکوک/ورود را کسب نکرد.*\n\n"
+            f"• وضعیت: *ارتباط برقرار شد اما هیچ سهمی فیلتر ورود را کسب نکرد.*\n\n"
             f"🟢 ربات فعال و آماده اسکن بعدی است."
         )
         send_bale_message(msg)
