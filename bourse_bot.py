@@ -14,7 +14,18 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 BALE_TOKEN = os.getenv("BALE_TOKEN")
 BALE_CHAT_ID = os.getenv("BALE_CHAT_ID")
+IRAN_PROXY = os.getenv("IRAN_PROXY") # اختیاری: در صورت تنظیم پروکسی ایرانی در Secrets
+
 STATE_FILE = "bourse_state.json"
+
+def get_proxies():
+    """تنظیم پروکسی در صورت وجود"""
+    if IRAN_PROXY:
+        return {
+            "http": IRAN_PROXY,
+            "https": IRAN_PROXY
+        }
+    return None
 
 def send_bale_message(text: str) -> bool:
     """ارسال پیام به پیام‌رسان بله"""
@@ -54,50 +65,61 @@ def save_state(state):
         pass
 
 def get_tsetmc_data():
-    """دریافت دیتای آنلاین بازار با اتصال مستقیم چندگانه"""
+    """دریافت دیتای آنلاین بازار با تست آدرس‌ها و APIهای مختلف"""
     urls_mw = [
+        "https://cdn.tsetmc.com/api/ClosingPrice/GetMarketWatch?market=1",
         "https://old.tsetmc.com/tsev2/data/MarketWatchPlus.aspx",
-        "http://old.tsetmc.com/tsev2/data/MarketWatchPlus.aspx",
-        "https://tsetmc.com/tsev2/data/MarketWatchPlus.aspx"
+        "https://tsetmc.com/tsev2/data/MarketWatchPlus.aspx",
+        "http://old.tsetmc.com/tsev2/data/MarketWatchPlus.aspx"
     ]
     url_client = "https://old.tsetmc.com/tsev2/data/ClientTypeAll.aspx"
     
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept": "*/*",
-        "Accept-Language": "fa-IR,fa;q=0.9,en-US;q=0.8,en;q=0.7",
-        "Connection": "keep-alive"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "fa,fa-IR;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+        "Referer": "https://tsetmc.com/"
     }
     
+    proxies = get_proxies()
     mw_data, client_data = None, None
 
+    # ۱. تلاش برای دریافت دیده بان بازار
     for url in urls_mw:
         try:
-            res1 = requests.get(url, headers=headers, timeout=10, verify=False)
-            if res1.status_code == 200 and len(res1.text) > 500:
+            res1 = requests.get(url, headers=headers, proxies=proxies, timeout=12, verify=False)
+            if res1.status_code == 200 and len(res1.text) > 200:
                 mw_data = res1.text
                 break
-        except Exception:
+        except Exception as e:
+            print(f"تلاش ناموفق برای اتصال به {url}: {e}")
             continue
 
+    # ۲. تلاش برای دریافت حقیقی/حقوقی
     try:
-        res2 = requests.get(url_client, headers=headers, timeout=10, verify=False)
+        res2 = requests.get(url_client, headers=headers, proxies=proxies, timeout=12, verify=False)
         if res2.status_code == 200 and len(res2.text) > 100:
             client_data = res2.text
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"خطا در دریافت دیتای حقیقی حقوقی: {e}")
 
     return mw_data, client_data
 
 def get_codal_latest_letters():
-    """دریافت آخرین اطلاعیه‌های کل بازار تنها با ۱ درخواست سبک"""
+    """دریافت آخرین اطلاعیه‌های کدال"""
     url = "https://search.codal.ir/api/search/v2/q"
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "Accept": "application/json"}
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json"
+    }
+    proxies = get_proxies()
     letters = []
     
     params = {"Page": 1, "PageSize": 10}
     try:
-        res = requests.get(url, headers=headers, params=params, timeout=10, verify=False)
+        res = requests.get(url, headers=headers, params=params, proxies=proxies, timeout=12, verify=False)
         if res.status_code == 200:
             data = res.json()
             items = data.get("Letters", [])
@@ -137,20 +159,19 @@ def analyze_all_market():
     filtered_signals = []
     total_scanned = 0
 
-    sections = mw_raw.split("@")
-    if len(sections) >= 3:
-        price_data = sections[2].split(";")
-        for item in price_data:
-            parts = item.split(",")
-            if len(parts) >= 11:
-                ins_code = parts[0]
-                symbol_name = parts[2].strip()
-                last_price = float(parts[7]) if parts[7] != "0" else float(parts[6])
-                close_price = float(parts[6])
-                vol = float(parts[9])
-                value = float(parts[10])
-
+    # پردازش دیتای متنی یا ساختار JSON از CDN
+    if "marketWatch" in mw_raw or "{" in mw_raw:
+        try:
+            data = json.loads(mw_raw)
+            items = data.get("marketWatch", [])
+            for item in items:
                 total_scanned += 1
+                ins_code = str(item.get("insCode"))
+                symbol_name = str(item.get("lVal18RFC")).strip()
+                last_price = float(item.get("pDrvc", 0))
+                close_price = float(item.get("pClosing", 0))
+                vol = float(item.get("tVol", 0))
+                value = float(item.get("tVal", 0))
 
                 buyer_power = 1.0
                 net_money_flow = 0
@@ -158,10 +179,8 @@ def analyze_all_market():
                     cd = client_dict[ins_code]
                     buy_capita = (cd["buy_vol"] / cd["buy_count"]) if cd["buy_count"] > 0 else 0
                     sell_capita = (cd["sell_vol"] / cd["sell_count"]) if cd["sell_count"] > 0 else 0
-                    
                     if sell_capita > 0:
                         buyer_power = round(buy_capita / sell_capita, 2)
-                    
                     net_money_flow = (cd["buy_vol"] - cd["sell_vol"]) * last_price
 
                 money_flow_toman = net_money_flow / 10
@@ -176,6 +195,48 @@ def analyze_all_market():
                         "money_flow_toman": money_flow_toman,
                         "time": now_str
                     })
+        except Exception:
+            pass
+    else:
+        sections = mw_raw.split("@")
+        if len(sections) >= 3:
+            price_data = sections[2].split(";")
+            for item in price_data:
+                parts = item.split(",")
+                if len(parts) >= 11:
+                    ins_code = parts[0]
+                    symbol_name = parts[2].strip()
+                    last_price = float(parts[7]) if parts[7] != "0" else float(parts[6])
+                    close_price = float(parts[6])
+                    vol = float(parts[9])
+                    value = float(parts[10])
+
+                    total_scanned += 1
+
+                    buyer_power = 1.0
+                    net_money_flow = 0
+                    if ins_code in client_dict:
+                        cd = client_dict[ins_code]
+                        buy_capita = (cd["buy_vol"] / cd["buy_count"]) if cd["buy_count"] > 0 else 0
+                        sell_capita = (cd["sell_vol"] / cd["sell_count"]) if cd["sell_count"] > 0 else 0
+                        
+                        if sell_capita > 0:
+                            buyer_power = round(buy_capita / sell_capita, 2)
+                        
+                        net_money_flow = (cd["buy_vol"] - cd["sell_vol"]) * last_price
+
+                    money_flow_toman = net_money_flow / 10
+                    if (buyer_power >= 1.5 and money_flow_toman > 0) or money_flow_toman >= 3_000_000_000:
+                        filtered_signals.append({
+                            "sym": symbol_name,
+                            "price": last_price,
+                            "close": close_price,
+                            "vol": vol,
+                            "value_toman": value / 10,
+                            "power": buyer_power,
+                            "money_flow_toman": money_flow_toman,
+                            "time": now_str
+                        })
 
     return filtered_signals, total_scanned
 
@@ -253,4 +314,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-            
+    
