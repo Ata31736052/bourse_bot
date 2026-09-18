@@ -1,0 +1,32 @@
+name: Bourse & FaraBourse Scanner
+
+on:
+  schedule:
+    # هر ۳۰ دقیقه در روزهای کاری بورس ایران (شنبه تا چهارشنبه)
+    # از ساعت ۹:۰۰ الی ۱۲:۳۰ به وقت تهران (UTC 5:30 تا 9:00)
+    - cron: '*/30 5-8 * * 6,0,1,2,3'
+  workflow_dispatch: # برای امکان اجرای دستی
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: Run Bourse Scanner Script
+        env:
+          BALE_TOKEN: ${{ secrets.BALE_TOKEN }}
+          BALE_CHAT_ID: ${{ secrets.BALE_CHAT_ID }}
+        run: python bourse_bot.py
+        
