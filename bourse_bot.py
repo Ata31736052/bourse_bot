@@ -54,27 +54,26 @@ def save_state(state):
         pass
 
 def get_tsetmc_data():
-    """دریافت دیتای TSETMC با استفاده از سرورها و پروکسی‌های جایگزین جهت دور زدن مسدودی آی‌پی"""
-    target_url = "https://old.tsetmc.com/tsev2/data/MarketWatchPlus.aspx"
-    target_client_url = "https://old.tsetmc.com/tsev2/data/ClientTypeAll.aspx"
-    
-    proxies_mw = [
-        target_url,
-        f"https://corsproxy.io/?{target_url}",
-        f"https://api.allorigins.win/raw?url={target_url}",
-        "http://tsetmc.com/tsev2/data/MarketWatchPlus.aspx"
+    """دریافت دیتای آنلاین بازار با اتصال مستقیم چندگانه"""
+    urls_mw = [
+        "https://old.tsetmc.com/tsev2/data/MarketWatchPlus.aspx",
+        "http://old.tsetmc.com/tsev2/data/MarketWatchPlus.aspx",
+        "https://tsetmc.com/tsev2/data/MarketWatchPlus.aspx"
     ]
+    url_client = "https://old.tsetmc.com/tsev2/data/ClientTypeAll.aspx"
     
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept": "*/*"
+        "Accept": "*/*",
+        "Accept-Language": "fa-IR,fa;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Connection": "keep-alive"
     }
     
     mw_data, client_data = None, None
 
-    for url in proxies_mw:
+    for url in urls_mw:
         try:
-            res1 = requests.get(url, headers=headers, timeout=8, verify=False)
+            res1 = requests.get(url, headers=headers, timeout=10, verify=False)
             if res1.status_code == 200 and len(res1.text) > 500:
                 mw_data = res1.text
                 break
@@ -82,7 +81,7 @@ def get_tsetmc_data():
             continue
 
     try:
-        res2 = requests.get(target_client_url, headers=headers, timeout=8, verify=False)
+        res2 = requests.get(url_client, headers=headers, timeout=10, verify=False)
         if res2.status_code == 200 and len(res2.text) > 100:
             client_data = res2.text
     except Exception:
@@ -93,7 +92,7 @@ def get_tsetmc_data():
 def get_codal_latest_letters():
     """دریافت آخرین اطلاعیه‌های کل بازار تنها با ۱ درخواست سبک"""
     url = "https://search.codal.ir/api/search/v2/q"
-    headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "Accept": "application/json"}
     letters = []
     
     params = {"Page": 1, "PageSize": 10}
@@ -181,7 +180,7 @@ def analyze_all_market():
     return filtered_signals, total_scanned
 
 def main():
-    print("شروع اسکن سبک و سریع کل بازار بورس و کدال...")
+    print("شروع اسکن کل بازار بورس و کدال...")
     state = load_state()
     now_time = datetime.now().strftime("%H:%M - %Y/%m/%d")
 
@@ -254,4 +253,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
+            
