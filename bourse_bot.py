@@ -1,5 +1,5 @@
 # ============================================
-# 🤖 ربات سبک اسکن کل بازار بورس ایران (TSETMC + Codal -> بله)
+# 🤖 ربات جامع تابلوخوانی و کدال بورس ایران (TSETMC + Codal -> بله)
 # ============================================
 
 import os
@@ -54,35 +54,39 @@ def save_state(state):
         pass
 
 def get_tsetmc_data():
-    """دریافت یکباره دیتای کل بازار و حقیقی/حقوقی با پشتیبانی از آدرس‌های جایگزین"""
-    urls_mw = [
-        "https://old.tsetmc.com/tsev2/data/MarketWatchPlus.aspx",
-        "http://tsetmc.com/tsev2/data/MarketWatchPlus.aspx",
-        "https://cdn.tsetmc.com/api/ClosingPrice/GetMarketWatch?market=0&organ=0"
+    """دریافت دیتای TSETMC با استفاده از سرورها و پروکسی‌های جایگزین جهت دور زدن مسدودی آی‌پی"""
+    target_url = "https://old.tsetmc.com/tsev2/data/MarketWatchPlus.aspx"
+    target_client_url = "https://old.tsetmc.com/tsev2/data/ClientTypeAll.aspx"
+    
+    proxies_mw = [
+        target_url,
+        f"https://corsproxy.io/?{target_url}",
+        f"https://api.allorigins.win/raw?url={target_url}",
+        "http://tsetmc.com/tsev2/data/MarketWatchPlus.aspx"
     ]
-    url_client = "https://old.tsetmc.com/tsev2/data/ClientTypeAll.aspx"
     
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         "Accept": "*/*"
     }
+    
     mw_data, client_data = None, None
 
-    for url in urls_mw:
+    for url in proxies_mw:
         try:
-            res1 = requests.get(url, headers=headers, timeout=20, verify=False)
-            if res1.status_code == 200 and len(res1.text) > 200:
+            res1 = requests.get(url, headers=headers, timeout=8, verify=False)
+            if res1.status_code == 200 and len(res1.text) > 500:
                 mw_data = res1.text
                 break
-        except Exception as e:
-            print(f"خطا در دریافت TSETMC از {url}: {e}")
+        except Exception:
+            continue
 
     try:
-        res2 = requests.get(url_client, headers=headers, timeout=20, verify=False)
-        if res2.status_code == 200:
+        res2 = requests.get(target_client_url, headers=headers, timeout=8, verify=False)
+        if res2.status_code == 200 and len(res2.text) > 100:
             client_data = res2.text
-    except Exception as e:
-        print(f"خطا در دریافت دیتای حقیقی/حقوقی: {e}")
+    except Exception:
+        pass
 
     return mw_data, client_data
 
@@ -92,9 +96,9 @@ def get_codal_latest_letters():
     headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
     letters = []
     
-    params = {"Page": 1, "PageSize": 10} # ۱۰ اطلاعیه اخیر کل بازار
+    params = {"Page": 1, "PageSize": 10}
     try:
-        res = requests.get(url, headers=headers, params=params, timeout=12, verify=False)
+        res = requests.get(url, headers=headers, params=params, timeout=10, verify=False)
         if res.status_code == 200:
             data = res.json()
             items = data.get("Letters", [])
@@ -118,7 +122,6 @@ def analyze_all_market():
     if not mw_raw:
         return None, f"⚠️ <b>خطا در دریافت اطلاعات TSETMC ({now_str})</b>\nارتباط با سرور بورس برقرار نشد."
 
-    # پردازش حقیقی/حقوقی کل بازار
     client_dict = {}
     if client_raw:
         for line in client_raw.split(";"):
@@ -146,11 +149,10 @@ def analyze_all_market():
                 last_price = float(parts[7]) if parts[7] != "0" else float(parts[6])
                 close_price = float(parts[6])
                 vol = float(parts[9])
-                value = float(parts[10]) # ریال
+                value = float(parts[10])
 
                 total_scanned += 1
 
-                # محاسبات تابلوخوانی
                 buyer_power = 1.0
                 net_money_flow = 0
                 if ins_code in client_dict:
@@ -163,7 +165,6 @@ def analyze_all_market():
                     
                     net_money_flow = (cd["buy_vol"] - cd["sell_vol"]) * last_price
 
-                # 🎯 فیلترهای طلایی اسکن کل بازار
                 money_flow_toman = net_money_flow / 10
                 if (buyer_power >= 1.5 and money_flow_toman > 0) or money_flow_toman >= 3_000_000_000:
                     filtered_signals.append({
@@ -231,7 +232,7 @@ def main():
 
     if new_signals:
         summary_text = f"🎯 <b>سیگنال‌های تابلوخوانی کل بازار ({now_time})</b>\n\n"
-        for s in new_signals[:10]: # حداکثر ۱۰ سهم برتر در هر نوبت
+        for s in new_signals[:10]:
             summary_text += (
                 f"🔹 <b>نماد: #{s['sym']}</b>\n"
                 f"▫️ قیمت: <b>{s['price']:,.0f} ریال</b>\n"
