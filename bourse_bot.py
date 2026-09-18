@@ -1,5 +1,5 @@
 # ============================================
-# 🟢 ربات جامع اسکن بورس ایران + کدال ویژه پیام‌رسان بله
+# 🟢 ربات پیشرفته بورس ایران + کدال + تابلوخوانی
 # ============================================
 
 import os
@@ -8,13 +8,15 @@ import time
 import ssl
 import urllib.request
 
-# دریافت کلیدها از تنظیمات امنیتی گیت‌هاب (Secrets)
 BALE_TOKEN = os.getenv("BALE_TOKEN")
 BALE_CHAT_ID = os.getenv("BALE_CHAT_ID")
 
 CTX = ssl.create_default_context()
 CTX.check_hostname = False
 CTX.verify_mode = ssl.CERT_NONE
+
+# لیست برای ذخیره نمادهای سیگنال‌شده در طول اجرای فعلی
+SENT_SIGNALS = set()
 
 def http_get(url, timeout=15):
     try:
@@ -71,8 +73,33 @@ def calculate_rsi(prices, period=14):
     rs = avg_gain / avg_loss
     return round(100.0 - (100.0 / (1.0 + rs)), 1)
 
+def get_client_power(ins_id):
+    """محاسبه قدرت خریدار حقیقی به فروشنده حقیقی (تابلوخوانی)"""
+    url = f"https://old.tsetmc.com/tsev2/data/clienttype.aspx?i={ins_id}"
+    raw = http_get(url)
+    if not raw:
+        return 1.0
+    try:
+        # دریافت آخرین سطر داده حقیقی حقوقی
+        lines = raw.strip().split(';')
+        if lines:
+            cols = lines[-1].split(',')
+            if len(cols) >= 9:
+                buy_real_vol = float(cols[1])   # حجم خرید حقیقی
+                buy_real_count = float(cols[5]) # تعداد خریدار حقیقی
+                sell_real_vol = float(cols[3])  # حجم فروش حقیقی
+                sell_real_count = float(cols[7])# تعداد فروشنده حقیقی
+
+                if buy_real_count > 0 and sell_real_count > 0 and sell_real_vol > 0:
+                    buy_per_capita = buy_real_vol / buy_real_count
+                    sell_per_capita = sell_real_vol / sell_real_count
+                    if sell_per_capita > 0:
+                        return round(buy_per_capita / sell_per_capita, 2)
+    except Exception as e:
+        print(f"⚠️ خطا در دریافت اطلاعات حقیقی/حقوقی {ins_id}: {e}")
+    return 1.0
+
 def get_tsetmc_market_watch():
-    """دریافت دیدبان کامل بورس و فرابورس"""
     url = "https://old.tsetmc.com/tsev2/data/MarketWatchPlus.aspx"
     raw_data = http_get(url)
     if not raw_data:
@@ -89,10 +116,10 @@ def get_tsetmc_market_watch():
                     ins_id = cols[0]
                     ticker = cols[2]
                     name = cols[3]
-                    hevol = float(cols[9])    # حجم امروز
-                    pdrst = float(cols[10])   # آخرین قیمت
-                    pcle = float(cols[7])     # قیمت پایانی
-                    yesterday = float(cols[5])# دیروز
+                    hevol = float(cols[9])
+                    pdrst = float(cols[10])
+                    pcle = float(cols[7])
+                    yesterday = float(cols[5])
                     
                     if hevol > 0 and pcle > 0 and not ticker.startswith("حسابه"):
                         symbols.append({
@@ -110,7 +137,6 @@ def get_tsetmc_market_watch():
     return symbols
 
 def get_symbol_history(ins_id):
-    """دریافت سابقه برای میانگین حجم ماهانه و RSI"""
     url = f"https://old.tsetmc.com/tsev2/data/Export-Txt.aspx?t=i&a=1&b=0&i={ins_id}"
     csv_data = http_get(url)
     if not csv_data:
@@ -133,7 +159,6 @@ def get_symbol_history(ins_id):
     return closes, volumes
 
 def check_codal_disclosure(ticker):
-    """بررسی آخرین وضعیت کدال برای افشای الف و ب"""
     url = f"https://api.codal.ir/api/search/v2/q?Symbol={ticker}&PageNumber=1"
     raw = http_get(url)
     if not raw:
@@ -142,7 +167,7 @@ def check_codal_disclosure(ticker):
         data = json.loads(raw)
         letters = data.get('Letters', [])
         
-        for letter in letters[:5]:
+        for letter in letters[:3]:
             title = letter.get('Title', '')
             disclosure_type = None
             if "افشای اطلاعات با اهمیت" in title and "گروه الف" in title:
@@ -163,15 +188,14 @@ def check_codal_disclosure(ticker):
     return None
 
 def run_bourse_scanner():
-    print("🔎 شروع اسکن کل بازار بورس و فرابورس ایران...")
+    print("🔎 شروع اسکن پیشرفته بورس و فرابورس...")
     market_symbols = get_tsetmc_market_watch()
     print(f"تعداد {len(market_symbols)} نماد فعال دریافت شد.")
 
     signals = []
     
     for sym in market_symbols:
-        # فیلتر اولیه برای سرعت‌دهی و حذف سهم‌های بسیار کم‌حجم
-        if sym['volume'] < 50000:
+        if sym['volume'] < 100000:
             continue
             
         closes, volumes = get_symbol_history(sym['id'])
@@ -185,38 +209,40 @@ def run_bourse_scanner():
         vol_ratio = round(sym['volume'] / avg_vol_monthly, 2)
         rsi_val = calculate_rsi(closes)
         
-        # 📌 فیلترهای سیگنال‌دهی:
-        # ۱. حجم امروز بیش از ۲ برابر میانگین ماهانه
-        # ۲. RSI در محدوده مناسب ۴۵ تا ۶۸
-        # ۳. کندل امروز مثبت (قیمت پایانی صعودی)
-        is_volume_spike = vol_ratio >= 2.0
-        is_rsi_bullish = 45 <= rsi_val <= 68
-        is_green = sym['close_price'] > sym['yesterday']
-        
-        if is_volume_spike and is_rsi_bullish and is_green:
-            change_pct = round(((sym['close_price'] - sym['yesterday']) / sym['yesterday']) * 100, 2)
-            codal_info = check_codal_disclosure(sym['ticker'])
+        # ۱. حجم مشکوک (بیش از ۱.۸ برابر)
+        # ۲. RSI در محدوده مناسب ۴۲ تا ۶۸
+        # ۳. قیمت پایانی مثبت
+        if vol_ratio >= 1.8 and (42 <= rsi_val <= 68) and (sym['close_price'] > sym['yesterday']):
             
-            signals.append({
-                'ticker': sym['ticker'],
-                'name': sym['name'],
-                'price': int(sym['close_price']),
-                'change_pct': change_pct,
-                'vol_ratio': vol_ratio,
-                'rsi': rsi_val,
-                'codal': codal_info,
-                'tsetmc_url': f"https://main.tsetmc.com/instInfo/{sym['id']}"
-            })
+            # بررسی قدرت خریدار (تابلوخوانی)
+            buyer_power = get_client_power(sym['id'])
+            
+            # شرط ورود پول حقیقی: قدرت خریدار حداقل ۱.۳ برابر فروشنده
+            if buyer_power >= 1.3:
+                change_pct = round(((sym['close_price'] - sym['yesterday']) / sym['yesterday']) * 100, 2)
+                codal_info = check_codal_disclosure(sym['ticker'])
+                
+                signals.append({
+                    'ticker': sym['ticker'],
+                    'name': sym['name'],
+                    'price': int(sym['close_price']),
+                    'change_pct': change_pct,
+                    'vol_ratio': vol_ratio,
+                    'rsi': rsi_val,
+                    'buyer_power': buyer_power,
+                    'codal': codal_info,
+                    'tsetmc_url': f"https://main.tsetmc.com/instInfo/{sym['id']}"
+                })
 
-    # ارسال به بله
     if signals:
-        print(f"🎯 تعداد {len(signals)} سیگنال کشف شد. ارسال به بله...")
+        print(f"🎯 تعداد {len(signals)} سیگنال با کیفیت بالا کشف شد.")
         for sig in signals:
             msg = (
-                f"🟢 <b>#سیگنال_بورس | {sig['ticker']} ({sig['name']})</b>\n\n"
+                f"🟢 <b>#سیگنال_پیشرفته | {sig['ticker']} ({sig['name']})</b>\n\n"
                 f"💰 قیمت پایانی: <b>{sig['price']:,} ریال</b> ({sig['change_pct']}%)\n"
                 f"📊 <b>حجم امروز:</b> <b>{sig['vol_ratio']} برابر</b> میانگین ماهانه 🔥\n"
-                f"📈 <b>وضعیت RSI:</b> {sig['rsi']}\n\n"
+                f"💪 <b>قدرت خریدار:</b> <b>{sig['buyer_power']} برابر</b> فروشنده 👑\n"
+                f"📈 <b>شاخص RSI:</b> {sig['rsi']}\n\n"
             )
             
             if sig['codal']:
@@ -230,7 +256,8 @@ def run_bourse_scanner():
             send_bale_message(msg)
             time.sleep(0.5)
     else:
-        print("هیچ سیگنال جدیدی در این اسکن یافت نشد.")
+        print("هیچ سیگنال واجد شرایطی در این اسکن یافت نشد.")
 
 if __name__ == "__main__":
     run_bourse_scanner()
+    
