@@ -54,23 +54,35 @@ def save_state(state):
         pass
 
 def get_tsetmc_data():
-    """دریافت یکباره دیتای کل بازار و حقیقی/حقوقی"""
-    url_mw = "https://old.tsetmc.com/tsev2/data/MarketWatchPlus.aspx"
+    """دریافت یکباره دیتای کل بازار و حقیقی/حقوقی با پشتیبانی از آدرس‌های جایگزین"""
+    urls_mw = [
+        "https://old.tsetmc.com/tsev2/data/MarketWatchPlus.aspx",
+        "http://tsetmc.com/tsev2/data/MarketWatchPlus.aspx",
+        "https://cdn.tsetmc.com/api/ClosingPrice/GetMarketWatch?market=0&organ=0"
+    ]
     url_client = "https://old.tsetmc.com/tsev2/data/ClientTypeAll.aspx"
     
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "*/*"
+    }
     mw_data, client_data = None, None
 
+    for url in urls_mw:
+        try:
+            res1 = requests.get(url, headers=headers, timeout=20, verify=False)
+            if res1.status_code == 200 and len(res1.text) > 200:
+                mw_data = res1.text
+                break
+        except Exception as e:
+            print(f"خطا در دریافت TSETMC از {url}: {e}")
+
     try:
-        res1 = requests.get(url_mw, headers=headers, timeout=20, verify=False)
-        if res1.status_code == 200:
-            mw_data = res1.text
-            
         res2 = requests.get(url_client, headers=headers, timeout=20, verify=False)
         if res2.status_code == 200:
             client_data = res2.text
     except Exception as e:
-        print(f"خطا در دریافت TSETMC: {e}")
+        print(f"خطا در دریافت دیتای حقیقی/حقوقی: {e}")
 
     return mw_data, client_data
 
@@ -151,8 +163,7 @@ def analyze_all_market():
                     
                     net_money_flow = (cd["buy_vol"] - cd["sell_vol"]) * last_price
 
-                # 🎯 فیلترهای طلایی اسکن کل بازار (جهت عدم ارسال سیگنال‌های ضعیف)
-                # شرط: قدرت خریدار بالای ۱.۵ یا ورود پول حقیقی بالای ۳ میلیارد تومان
+                # 🎯 فیلترهای طلایی اسکن کل بازار
                 money_flow_toman = net_money_flow / 10
                 if (buyer_power >= 1.5 and money_flow_toman > 0) or money_flow_toman >= 3_000_000_000:
                     filtered_signals.append({
@@ -242,3 +253,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
