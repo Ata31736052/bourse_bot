@@ -1,5 +1,5 @@
 # ============================================
-# 🤖 ربات سیگنال‌دهی و پایش بورس ایران (TSETMC -> پیام‌رسان بله)
+# 🤖 ربات سبک اسکن کل بازار بورس ایران (TSETMC + Codal -> بله)
 # ============================================
 
 import os
@@ -10,19 +10,11 @@ import requests
 import urllib3
 from datetime import datetime
 
-# غیرفعال کردن هشدارهای عدم بررسی گواهی SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# دریافت توکن و چت‌آیدی بله از متغیرهای محیطی گیت‌هاب
 BALE_TOKEN = os.getenv("BALE_TOKEN")
 BALE_CHAT_ID = os.getenv("BALE_CHAT_ID")
 STATE_FILE = "bourse_state.json"
-
-# لیست نمادهای مورد نظر برای پایش روزانه (قابل ویرایش)
-WATCHLIST = [
-    "وبملت", "شپدیس", "فسپا", "کپرور", "تکیمیا", 
-    "کتوکا", "حگردش", "فسرب", "خمحرکه", "خودرو", "خساپا"
-]
 
 def send_bale_message(text: str) -> bool:
     """ارسال پیام به پیام‌رسان بله"""
@@ -34,7 +26,8 @@ def send_bale_message(text: str) -> bool:
     url = f"https://tapi.bale.ai/bot{BALE_TOKEN}/sendMessage"
     payload = {
         "chat_id": BALE_CHAT_ID,
-        "text": text
+        "text": text,
+        "parse_mode": "HTML"
     }
     
     try:
@@ -50,8 +43,8 @@ def load_state():
             with open(STATE_FILE, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except Exception:
-            return {}
-    return {}
+            return {"tsetmc": {}, "codal": []}
+    return {"tsetmc": {}, "codal": []}
 
 def save_state(state):
     try:
@@ -61,139 +54,191 @@ def save_state(state):
         pass
 
 def get_tsetmc_data():
-    """دریافت اطلاعات آنلاین یا آخرین روز معاملاتی ثبت‌شده از TSETMC"""
-    urls = [
-        "https://cdn.tsetmc.com/api/ClosingPrice/GetMarketWatch?market=0&organ=0",
-        "https://old.tsetmc.com/tsev2/data/MarketWatchPlus.aspx"
-    ]
+    """دریافت یکباره دیتای کل بازار و حقیقی/حقوقی"""
+    url_mw = "https://old.tsetmc.com/tsev2/data/MarketWatchPlus.aspx"
+    url_client = "https://old.tsetmc.com/tsev2/data/ClientTypeAll.aspx"
     
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "application/json, text/plain, */*"
-    }
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    mw_data, client_data = None, None
+
+    try:
+        res1 = requests.get(url_mw, headers=headers, timeout=20, verify=False)
+        if res1.status_code == 200:
+            mw_data = res1.text
+            
+        res2 = requests.get(url_client, headers=headers, timeout=20, verify=False)
+        if res2.status_code == 200:
+            client_data = res2.text
+    except Exception as e:
+        print(f"خطا در دریافت TSETMC: {e}")
+
+    return mw_data, client_data
+
+def get_codal_latest_letters():
+    """دریافت آخرین اطلاعیه‌های کل بازار تنها با ۱ درخواست سبک"""
+    url = "https://search.codal.ir/api/search/v2/q"
+    headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+    letters = []
     
-    for url in urls:
-        try:
-            res = requests.get(url, headers=headers, timeout=20, verify=False)
-            if res.status_code == 200 and len(res.text) > 100:
-                return res.text
-        except Exception as e:
-            print(f"تلاش ناموفق برای دریافت از {url}: {e}")
-            continue
+    params = {"Page": 1, "PageSize": 10} # ۱۰ اطلاعیه اخیر کل بازار
+    try:
+        res = requests.get(url, headers=headers, params=params, timeout=12, verify=False)
+        if res.status_code == 200:
+            data = res.json()
+            items = data.get("Letters", [])
+            for item in items:
+                letters.append({
+                    "id": str(item.get("TracingNo")),
+                    "sym": item.get("Symbol"),
+                    "title": item.get("Title"),
+                    "time": item.get("PublishDateTime"),
+                    "url": f"https://codal.ir/Reports/Decision.aspx?LetterSerial={item.get('Url')}" if item.get('Url') else "https://codal.ir"
+                })
+    except Exception as e:
+        print(f"خطا در دریافت کدال کل بازار: {e}")
 
-    return None
+    return letters
 
-def analyze_bourse():
-    """تحلیل نمادها بر اساس اطلاعات امروز/آخرین روز معاملاتی"""
-    raw_data = get_tsetmc_data()
+def analyze_all_market():
+    mw_raw, client_raw = get_tsetmc_data()
     now_str = datetime.now().strftime("%H:%M - %Y/%m/%d")
     
-    if not raw_data:
-        return None, f"⚠️ **خطا در دریافت اطلاعات TSETMC ({now_str})**\n\nسرور TSETMC در حال حاضر پاسخگو نیست."
+    if not mw_raw:
+        return None, f"⚠️ <b>خطا در دریافت اطلاعات TSETMC ({now_str})</b>\nارتباط با سرور بورس برقرار نشد."
 
-    signals = []
-    scanned_count = 0
-    is_offline_data = False
+    # پردازش حقیقی/حقوقی کل بازار
+    client_dict = {}
+    if client_raw:
+        for line in client_raw.split(";"):
+            parts = line.split(",")
+            if len(parts) >= 9:
+                ins_code = parts[0]
+                client_dict[ins_code] = {
+                    "buy_count": float(parts[1]) if parts[1] else 1,
+                    "sell_count": float(parts[3]) if parts[3] else 1,
+                    "buy_vol": float(parts[5]) if parts[5] else 0,
+                    "sell_vol": float(parts[7]) if parts[7] else 0,
+                }
 
-    # بررسی خروجی JSON (سرویس جدید CDN)
-    if raw_data.startswith("{") or raw_data.startswith("["):
-        try:
-            data = json.loads(raw_data)
-            market_list = data.get("marketWatch", []) if isinstance(data, dict) else data
-            
-            for item in market_list:
-                lval = item.get("lVal18RFC", "").strip()
-                if lval in WATCHLIST:
-                    scanned_count += 1
-                    price = item.get("pClosing", 0) or item.get("priceChange", 0)
-                    vol = item.get("tVol", 0)
-                    
-                    # بررسی حجم معامله (در صورت تعطیلی بازار، آخرین حجم ثبت‌شده روز قبل بررسی می‌شود)
-                    if vol > 500000:
-                        signals.append({
-                            "sym": lval,
-                            "price": price,
-                            "vol": vol,
-                            "time": now_str
-                        })
-            return signals, scanned_count
-        except Exception as e:
-            print(f"خطا در پردازش JSON: {e}")
+    filtered_signals = []
+    total_scanned = 0
 
-    # بررسی خروجی متنی (TSETMC v2 - دیتای آخرین معامله/روز قبل)
-    sections = raw_data.split("@")
+    sections = mw_raw.split("@")
     if len(sections) >= 3:
         price_data = sections[2].split(";")
         for item in price_data:
             parts = item.split(",")
             if len(parts) >= 11:
+                ins_code = parts[0]
                 symbol_name = parts[2].strip()
-                last_price = parts[6] if parts[6] != "0" else parts[7]  # اولویت با قیمت پایانی آخرین روز
-                vol = parts[9]
+                last_price = float(parts[7]) if parts[7] != "0" else float(parts[6])
+                close_price = float(parts[6])
+                vol = float(parts[9])
+                value = float(parts[10]) # ریال
 
-                if symbol_name in WATCHLIST:
-                    scanned_count += 1
-                    try:
-                        vol_num = float(vol)
-                        price_num = float(last_price)
-                        if vol_num > 500000:  # فیلتر حجم بالای ۵۰۰ هزار
-                            signals.append({
-                                "sym": symbol_name,
-                                "price": price_num,
-                                "vol": vol_num,
-                                "time": now_str
-                            })
-                    except ValueError:
-                        continue
+                total_scanned += 1
 
-    return signals, scanned_count
+                # محاسبات تابلوخوانی
+                buyer_power = 1.0
+                net_money_flow = 0
+                if ins_code in client_dict:
+                    cd = client_dict[ins_code]
+                    buy_capita = (cd["buy_vol"] / cd["buy_count"]) if cd["buy_count"] > 0 else 0
+                    sell_capita = (cd["sell_vol"] / cd["sell_count"]) if cd["sell_count"] > 0 else 0
+                    
+                    if sell_capita > 0:
+                        buyer_power = round(buy_capita / sell_capita, 2)
+                    
+                    net_money_flow = (cd["buy_vol"] - cd["sell_vol"]) * last_price
+
+                # 🎯 فیلترهای طلایی اسکن کل بازار (جهت عدم ارسال سیگنال‌های ضعیف)
+                # شرط: قدرت خریدار بالای ۱.۵ یا ورود پول حقیقی بالای ۳ میلیارد تومان
+                money_flow_toman = net_money_flow / 10
+                if (buyer_power >= 1.5 and money_flow_toman > 0) or money_flow_toman >= 3_000_000_000:
+                    filtered_signals.append({
+                        "sym": symbol_name,
+                        "price": last_price,
+                        "close": close_price,
+                        "vol": vol,
+                        "value_toman": value / 10,
+                        "power": buyer_power,
+                        "money_flow_toman": money_flow_toman,
+                        "time": now_str
+                    })
+
+    return filtered_signals, total_scanned
 
 def main():
-    print("شروع اسکن بازار بورس (زنده / آخرین روز معاملاتی)...")
+    print("شروع اسکن سبک و سریع کل بازار بورس و کدال...")
     state = load_state()
     now_time = datetime.now().strftime("%H:%M - %Y/%m/%d")
 
-    signals, result_info = analyze_bourse()
+    # ۱. پردازش کدال کل بازار
+    codal_history = state.get("codal", [])
+    latest_letters = get_codal_latest_letters()
+    new_letters = []
 
-    # ۱. حالت خطا در اتصال به TSETMC
-    if signals is None and isinstance(result_info, str):
-        send_bale_message(result_info)
+    for ltr in latest_letters:
+        if ltr["id"] not in codal_history:
+            new_letters.append(ltr)
+            codal_history.append(ltr["id"])
+
+    state["codal"] = codal_history[-100:]
+
+    if new_letters:
+        for l in new_letters:
+            msg = (
+                f"📰 <b>اطلاعیه جدید کدال | #{l['sym']}</b>\n\n"
+                f"📝 <b>عنوان:</b> {l['title']}\n"
+                f"⏰ <b>زمان:</b> {l['time']}\n\n"
+                f"🔗 <a href='{l['url']}'>مشاهده در کدال</a>"
+            )
+            send_bale_message(msg)
+            time.sleep(0.3)
+
+    # ۲. اسکن تابلوخوانی کل بازار
+    signals, total_scanned = analyze_all_market()
+
+    if signals is None and isinstance(total_scanned, str):
+        send_bale_message(total_scanned)
+        save_state(state)
         return
 
-    # ۲. بررسی سیگنال‌های جدید
+    tsetmc_state = state.get("tsetmc", {})
     new_signals = []
+
     if signals:
         for sig in signals:
-            last_sent = state.get(sig["sym"], {}).get("last_sent")
-            # جلوگیری از ارسال تکراری در یک روز
-            if last_sent != sig["time"].split(" - ")[1]:
+            last_sent = tsetmc_state.get(sig["sym"])
+            today_date = sig["time"].split(" - ")[1]
+            if last_sent != today_date:
                 new_signals.append(sig)
-                state[sig["sym"]] = {"last_sent": sig["time"].split(" - ")[1]}
+                tsetmc_state[sig["sym"]] = today_date
 
+        state["tsetmc"] = tsetmc_state
         save_state(state)
 
     if new_signals:
-        for s in new_signals:
-            msg = (
-                f"🚀 **#سیگنال_بورس | {s['sym']}**\n\n"
-                f"💰 قیمت پایانی/آخرین: **{s['price']:,.0f} ریال**\n"
-                f"📊 حجم معاملات (روز/آخرین معامله): **{s['vol']:,.0f}**\n"
-                f"⏰ تاریخ اسکن: {s['time']}\n\n"
-                f"🟢 وضعیت: حجم معاملات بالای ۵۰۰ هزار معامله ثبت شد."
+        summary_text = f"🎯 <b>سیگنال‌های تابلوخوانی کل بازار ({now_time})</b>\n\n"
+        for s in new_signals[:10]: # حداکثر ۱۰ سهم برتر در هر نوبت
+            summary_text += (
+                f"🔹 <b>نماد: #{s['sym']}</b>\n"
+                f"▫️ قیمت: <b>{s['price']:,.0f} ریال</b>\n"
+                f"▫️ قدرت خریدار: <b>{s['power']}</b>\n"
+                f"▫️ ورود پول حقیقی: <b>{s['money_flow_toman']/1e8:,.1f} میلیارد تومان</b>\n"
+                f"----------------------------\n"
             )
-            send_bale_message(msg)
-            time.sleep(0.5)
-    else:
-        # ۳. گزارش خلاصه اسکن
+        send_bale_message(summary_text)
+    elif not new_letters:
         msg = (
-            f"📊 **گزارش دیده‌بان بورس ({now_time})**\n\n"
-            f"• تعداد نمادهای پایش‌شده: **{result_info} نماد** از لیست دیده‌بان\n"
-            f"• وضعیت: *اطلاعات آخرین روز معاملاتی دریافت شد و هیچ سیگنال جدیدی ثبت نگردید.*\n\n"
+            f"📊 <b>گزارش اسکن کل بازار ({now_time})</b>\n\n"
+            f"• کل نمادهای اسکن‌شده: <b>{total_scanned} نماد</b>\n"
+            f"• وضعیت: <i>هیچ سهمی واجد شرایط قدرت خریدار بالای ۱.۵ یا ورود پول سنگین نگردید.</i>\n\n"
             f"🟢 ربات فعال است."
         )
         send_bale_message(msg)
 
-    print("پایان اسکن بورس.")
+    print("پایان اسکن کل بازار.")
 
 if __name__ == "__main__":
     main()
