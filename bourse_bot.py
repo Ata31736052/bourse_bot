@@ -14,6 +14,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 BALE_TOKEN = os.getenv("BALE_TOKEN")
 BALE_CHAT_ID = os.getenv("BALE_CHAT_ID")
+IRAN_PROXY = os.getenv("IRAN_PROXY")  # در صورت وجود پروکسی (مثلاً http://user:pass@ip:port)
 STATE_FILE = "bourse_state.json"
 
 def send_bale_message(text: str) -> bool:
@@ -54,7 +55,7 @@ def save_state(state):
         pass
 
 def get_tsetmc_data():
-    """دریافت دیتای آنلاین بازار با اتصال مستقیم و آدرس‌های متعدد"""
+    """دریافت دیتای آنلاین بازار با تلاش روی مسیرهای مختلف و پروکسی"""
     urls_mw = [
         "https://cdn.tsetmc.com/api/ClosingPrice/GetMarketWatch?market=1",
         "https://old.tsetmc.com/tsev2/data/MarketWatchPlus.aspx",
@@ -65,16 +66,24 @@ def get_tsetmc_data():
     
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language": "fa,fa-IR;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Accept": "*/*",
+        "Accept-Language": "fa-IR,fa;q=0.9,en-US;q=0.8,en;q=0.7",
         "Referer": "https://tsetmc.com/"
     }
+
+    proxies = None
+    if IRAN_PROXY:
+        proxies = {
+            "http": IRAN_PROXY,
+            "https": IRAN_PROXY
+        }
     
     mw_data, client_data = None, None
 
+    # تلاش برای دریافت دیده‌بان بازار
     for url in urls_mw:
         try:
-            res1 = requests.get(url, headers=headers, timeout=12, verify=False)
+            res1 = requests.get(url, headers=headers, proxies=proxies, timeout=10, verify=False)
             if res1.status_code == 200 and len(res1.text) > 200:
                 mw_data = res1.text
                 break
@@ -82,8 +91,9 @@ def get_tsetmc_data():
             print(f"تلاش ناموفق برای {url}: {e}")
             continue
 
+    # تلاش برای دریافت دیتای حقیقی/حقوقی
     try:
-        res2 = requests.get(url_client, headers=headers, timeout=12, verify=False)
+        res2 = requests.get(url_client, headers=headers, proxies=proxies, timeout=10, verify=False)
         if res2.status_code == 200 and len(res2.text) > 100:
             client_data = res2.text
     except Exception as e:
@@ -92,7 +102,7 @@ def get_tsetmc_data():
     return mw_data, client_data
 
 def get_codal_latest_letters():
-    """دریافت آخرین اطلاعیه‌های کدال کل بازار"""
+    """دریافت آخرین اطلاعیه‌های کدال کل بازار (کدال بر روی IP خارج مسدود نیست)"""
     url = "https://search.codal.ir/api/search/v2/q"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -100,9 +110,8 @@ def get_codal_latest_letters():
     }
     letters = []
     
-    params = {"Page": 1, "PageSize": 10}
     try:
-        res = requests.get(url, headers=headers, params=params, timeout=12, verify=False)
+        res = requests.get(url, headers=headers, params={"Page": 1, "PageSize": 10}, timeout=12, verify=False)
         if res.status_code == 200:
             data = res.json()
             items = data.get("Letters", [])
@@ -124,7 +133,7 @@ def analyze_all_market():
     now_str = datetime.now().strftime("%H:%M - %Y/%m/%d")
     
     if not mw_raw:
-        return None, f"⚠️ <b>خطا در دریافت اطلاعات TSETMC ({now_str})</b>\nارتباط با سرور بورس برقرار نشد."
+        return None, f"⚠️ <b>خطا در دریافت اطلاعات TSETMC ({now_str})</b>\nارتباط با سرور بورس برقرار نشد (محدودیت IP خارج از کشور)."
 
     client_dict = {}
     if client_raw:
@@ -201,10 +210,8 @@ def analyze_all_market():
                         cd = client_dict[ins_code]
                         buy_capita = (cd["buy_vol"] / cd["buy_count"]) if cd["buy_count"] > 0 else 0
                         sell_capita = (cd["sell_vol"] / cd["sell_count"]) if cd["sell_count"] > 0 else 0
-                        
                         if sell_capita > 0:
                             buyer_power = round(buy_capita / sell_capita, 2)
-                        
                         net_money_flow = (cd["buy_vol"] - cd["sell_vol"]) * last_price
 
                     money_flow_toman = net_money_flow / 10
@@ -223,7 +230,7 @@ def analyze_all_market():
     return filtered_signals, total_scanned
 
 def main():
-    print("شروع اسکن کل بازار بورس و کدال...")
+    print("شروع اسکن بورس و کدال...")
     state = load_state()
     now_time = datetime.now().strftime("%H:%M - %Y/%m/%d")
 
@@ -292,7 +299,7 @@ def main():
         )
         send_bale_message(msg)
 
-    print("پایان اسکن کل بازار.")
+    print("پایان اسکن.")
 
 if __name__ == "__main__":
     main()
