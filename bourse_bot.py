@@ -1,5 +1,5 @@
 # ============================================
-# 🤖 ربات جامع تابلوخوانی و کدال بورس ایران (TSETMC + Codal -> بله)
+# 🤖 ربات جامع بورس ایران (TSETMC + Codal -> بله)
 # ============================================
 
 import os
@@ -14,18 +14,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 BALE_TOKEN = os.getenv("BALE_TOKEN")
 BALE_CHAT_ID = os.getenv("BALE_CHAT_ID")
-IRAN_PROXY = os.getenv("IRAN_PROXY") # اختیاری: در صورت تنظیم پروکسی ایرانی در Secrets
-
 STATE_FILE = "bourse_state.json"
-
-def get_proxies():
-    """تنظیم پروکسی در صورت وجود"""
-    if IRAN_PROXY:
-        return {
-            "http": IRAN_PROXY,
-            "https": IRAN_PROXY
-        }
-    return None
 
 def send_bale_message(text: str) -> bool:
     """ارسال پیام به پیام‌رسان بله"""
@@ -65,7 +54,7 @@ def save_state(state):
         pass
 
 def get_tsetmc_data():
-    """دریافت دیتای آنلاین بازار با تست آدرس‌ها و APIهای مختلف"""
+    """دریافت دیتای آنلاین بازار با اتصال مستقیم و آدرس‌های متعدد"""
     urls_mw = [
         "https://cdn.tsetmc.com/api/ClosingPrice/GetMarketWatch?market=1",
         "https://old.tsetmc.com/tsev2/data/MarketWatchPlus.aspx",
@@ -78,48 +67,42 @@ def get_tsetmc_data():
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "fa,fa-IR;q=0.9,en-US;q=0.8,en;q=0.7",
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache",
         "Referer": "https://tsetmc.com/"
     }
     
-    proxies = get_proxies()
     mw_data, client_data = None, None
 
-    # ۱. تلاش برای دریافت دیده بان بازار
     for url in urls_mw:
         try:
-            res1 = requests.get(url, headers=headers, proxies=proxies, timeout=12, verify=False)
+            res1 = requests.get(url, headers=headers, timeout=12, verify=False)
             if res1.status_code == 200 and len(res1.text) > 200:
                 mw_data = res1.text
                 break
         except Exception as e:
-            print(f"تلاش ناموفق برای اتصال به {url}: {e}")
+            print(f"تلاش ناموفق برای {url}: {e}")
             continue
 
-    # ۲. تلاش برای دریافت حقیقی/حقوقی
     try:
-        res2 = requests.get(url_client, headers=headers, proxies=proxies, timeout=12, verify=False)
+        res2 = requests.get(url_client, headers=headers, timeout=12, verify=False)
         if res2.status_code == 200 and len(res2.text) > 100:
             client_data = res2.text
     except Exception as e:
-        print(f"خطا در دریافت دیتای حقیقی حقوقی: {e}")
+        print(f"خطا در دریافت دیتای حقیقی/حقوقی: {e}")
 
     return mw_data, client_data
 
 def get_codal_latest_letters():
-    """دریافت آخرین اطلاعیه‌های کدال"""
+    """دریافت آخرین اطلاعیه‌های کدال کل بازار"""
     url = "https://search.codal.ir/api/search/v2/q"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "application/json"
     }
-    proxies = get_proxies()
     letters = []
     
     params = {"Page": 1, "PageSize": 10}
     try:
-        res = requests.get(url, headers=headers, params=params, proxies=proxies, timeout=12, verify=False)
+        res = requests.get(url, headers=headers, params=params, timeout=12, verify=False)
         if res.status_code == 200:
             data = res.json()
             items = data.get("Letters", [])
@@ -132,7 +115,7 @@ def get_codal_latest_letters():
                     "url": f"https://codal.ir/Reports/Decision.aspx?LetterSerial={item.get('Url')}" if item.get('Url') else "https://codal.ir"
                 })
     except Exception as e:
-        print(f"خطا در دریافت کدال کل بازار: {e}")
+        print(f"خطا در دریافت کدال: {e}")
 
     return letters
 
@@ -159,7 +142,6 @@ def analyze_all_market():
     filtered_signals = []
     total_scanned = 0
 
-    # پردازش دیتای متنی یا ساختار JSON از CDN
     if "marketWatch" in mw_raw or "{" in mw_raw:
         try:
             data = json.loads(mw_raw)
@@ -245,7 +227,7 @@ def main():
     state = load_state()
     now_time = datetime.now().strftime("%H:%M - %Y/%m/%d")
 
-    # ۱. پردازش کدال کل بازار
+    # ۱. پردازش کدال
     codal_history = state.get("codal", [])
     latest_letters = get_codal_latest_letters()
     new_letters = []
@@ -268,7 +250,7 @@ def main():
             send_bale_message(msg)
             time.sleep(0.3)
 
-    # ۲. اسکن تابلوخوانی کل بازار
+    # ۲. اسکن تابلوخوانی بورس
     signals, total_scanned = analyze_all_market()
 
     if signals is None and isinstance(total_scanned, str):
